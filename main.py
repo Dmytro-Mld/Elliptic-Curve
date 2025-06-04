@@ -2,6 +2,8 @@ import random
 import time
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
+import hashlib
+
 
 class EllipticCurve:
     def __init__(self, a, b, p, n):
@@ -10,7 +12,7 @@ class EllipticCurve:
         self.p = p
         self.n = n
         if (4 * a**3 + 27 * b**2) % p == 0:
-            raise ValueError("Крива є виродженою")
+            raise ValueError("The curve is singular")
         
 class ECPoint:
     def __init__(self, curve, x, y, z):
@@ -64,9 +66,9 @@ class ECPoint:
         V1 = P2.x * P1.z % p
         V2 = P1.x * P2.z % p
         if V1 == V2:
-            if U1 != U2: # тут додавання взаємо-обернених точок
+            if U1 != U2: # Addition of inverse points
                 return ECPoint.infinity(curve)
-            else: # тут вхідні точки однакові
+            else: # addition of equal points
                 return ECPoint.PointDouble(P1, curve)
             
         U = (U1 - U2) % p
@@ -131,7 +133,8 @@ class DiffieHellmanKeys:
 
         return S_a, Q_a, Q_b
     
-    #Elliptic Curve Integrated Encryption Scheme
+#Elliptic Curve Integrated Encryption Scheme########################################################################################################################
+
 
 def xor_bytes(secret: bytes, key: bytes) -> bytes:
     key_len = len(key)
@@ -165,20 +168,22 @@ class User:
     def GenerateSecret(self, Q):
         S = ECPoint.ScalarMultiplicationMontgomery(Q, self.__private_key_d)
         return S
+    
+    def ScalarPrivateKey(self, k):
+        return self.__private_key_d * k
             
     def get_public_key(self):
         return self.public_key_Q
     
-class AESMessage:
+class AES_Message:
     def __init__(self, ciphertext: bytes, nonce: bytes, tag: bytes):
         self.ciphertext = ciphertext
         self.nonce = nonce
         self.tag = tag
 
-class AESHelper:
+class AES_Helper:
     def __init__(self, shared_secret: bytes):
         self.shared_secret = ECPoint.ProjectiveToAffin(shared_secret)
-
 
     def Enc(self, plaintext: bytes):
         S = int_to_bytes(self.shared_secret.x)
@@ -186,9 +191,9 @@ class AESHelper:
         cipher = AES.new(aes_key, AES.MODE_EAX)
         Cm, tag = cipher.encrypt_and_digest(plaintext)
         wrapped_key = KeyWrapper.wrap(S, aes_key)
-        return AESMessage(Cm, cipher.nonce, tag), wrapped_key
+        return AES_Message(Cm, cipher.nonce, tag), wrapped_key
 
-    def Dec(self, aes_message: AESMessage, wrapped_key: bytes):
+    def Dec(self, aes_message: AES_Message, wrapped_key: bytes):
         S = int_to_bytes(self.shared_secret.x)
         aes_key = KeyWrapper.unwrap(S, wrapped_key)
         cipher = AES.new(aes_key, AES.MODE_EAX, nonce=aes_message.nonce)
@@ -212,6 +217,51 @@ def int_to_bytes(n: int) -> bytes:
     num_bytes = (n.bit_length() + 7) // 8  # Округлення вгору до найближчого байта
     return n.to_bytes(num_bytes, byteorder='big')
 
+#Elliptic Curve Digital Signature Algorithm ########################################################################################################################
+
+class ECDSA_Pair():
+    def __init__(self, M:str, r: bytes, s: bytes):
+        self.M = M
+        self.r = r
+        self.s = s
+
+class ECDSA_Helper():
+    def __init__(self, shared_secret: bytes):
+        self.shared_secret = ECPoint.ProjectiveToAffin(shared_secret)
+
+    def Sign(name, M, P, curve):
+        n = curve.n
+        h = hashlib.sha512(M.encode())
+        k  = random.randint(2, n)
+        r = 0
+        while r == 0:
+            kP = ECPoint.ScalarMultiplicationMontgomery(P, k)
+            kP = ECPoint.ProjectiveToAffin(kP)
+            r = kP.x % n
+
+        s = (pow(k, -1, n) * (int(h.hexdigest(), 16) + User.ScalarPrivateKey(name, r))) % n
+
+        return ECDSA_Pair(M, r, s)
+    
+    def Check(name, pair, Q, P, curve):
+        n = curve.n
+        M = pair.M
+        r = pair.r
+        s = pair.s
+        h = hashlib.sha512(M.encode())
+        u_1 = ((pow(s, -1, n)) * int(h.hexdigest(), 16)) % n
+        u_2 = ((pow(s, -1, n)) * r) % n
+        u_1P = ECPoint.ScalarMultiplicationMontgomery(P, u_1)
+        u_2Q = ECPoint.ScalarMultiplicationMontgomery(Q, u_2)
+        v_point = ECPoint.PointAdd(u_1P, u_2Q, curve)
+        v_point_aff = ECPoint.ProjectiveToAffin(v_point)
+        v = v_point_aff.x
+
+        if v == r:
+            print("Signature verification status: Positive")
+        else:
+            print("Signature verification status: Negative")
+
 
 def main():
     n = 6277101735386680763835789423176059013767194773182842284081
@@ -233,16 +283,15 @@ def main():
     P_affin = ECPoint.ProjectiveToAffin(P_double)
     print("Affine coordinates are: \nx =", P_affin.x,"\ny =", P_affin.y, "\n")
 
-
-
     ################################################################################################################
+
     print("DIFFIE HELLMAN KEY EXCHANGE")
     start = time.time()
     S, Q_a, Q_b = DiffieHellmanKeys.KeyExchange(G, n)
     end = time.time()
     print("Time:", end - start, "seconds\n")
 
-
+    ################################################################################################################
 
     print("ELLIPTIC CURVE INTEGRATED ENCRYPTION SCHEME\n")
     alice = User(curve, G, name = "Alice")
@@ -255,7 +304,6 @@ def main():
     Q_b_aff = ECPoint.ProjectiveToAffin(Q_b)
     print(f"Q: x = {Q_b_aff.x}, y = {Q_b_aff.y}\n")
 
-    
     M = "With great power comes great responsibility"
     print("The message Alice wants to send Bob:\n*This message should only be visible for testing purposes*")
     print(f"Message is: \"{M}\"\n")
@@ -263,13 +311,36 @@ def main():
     M_bin = ''.join(format(ord(i), '08b') for i in M)
     User.GenerateKeys(alice)
     Q_a = User.get_public_key(alice)
-    alice_aes = AESHelper(User.GenerateSecret(alice, Q_b)) 
+    alice_aes = AES_Helper(User.GenerateSecret(alice, Q_b)) 
     aes_message, wrapped_key = alice_aes.Enc(bitstring_to_bytes(M_bin)) #Alice encrypts her message, wrapps the key, send it to Bob
     print(f"Alice's envelope to Bob (in bytes): \nciphertext = {aes_message.ciphertext}\nnonce = {aes_message.nonce}\ntag = {aes_message.tag}\nwraped key = {wrapped_key}\n")
 
-    bob_aes = AESHelper(User.GenerateSecret(bob, Q_a))
+    bob_aes = AES_Helper(User.GenerateSecret(bob, Q_a))
     plaintext = bob_aes.Dec(aes_message, wrapped_key) #Bob decrypts the message
     print("Bob decrypts the message and shows us what Alice sent him:")
     print(plaintext.decode('utf-8'))
+
+    ################################################################################################################
+
+    print("ELLIPTIC CURVE DIGITAL SIGNATURE ALGORITHM\n")
+    alice = User(curve, G, name = "Alice")
+    bob = User(curve, G, name = "Bob")
+    #Alice publishing public key Q_a, curve parameters and chosen hash algorithm:
+    print("Alice announces Elliptic curve parameters, chosen Hash function and her public key Q_a:\n")
+    print(f"Elliptic Curve P-192\na = {curve.a}\nb = {curve.b}\nn = {n}\nP = {G.x, G.y, G.z}\nhash algorithm: SHA512")
+    User.GenerateKeys(alice)
+    Q_a = User.get_public_key(alice)
+    Q_a_aff = ECPoint.ProjectiveToAffin(Q_a)
+    print(f"Q: x = {Q_a_aff.x}, y = {Q_a_aff.y}")
+
+    #Alice signs the message M
+    alice_sign = ECDSA_Helper.Sign(alice, M, G, curve)
+    print(f"Alice publishes her digital signature on a message:\nM = {alice_sign.M}\nr = {alice_sign.r}\ns = {alice_sign.s}")
+
+    #Bob starts verification check procedure:
+    ECDSA_Helper.Check(bob, alice_sign, Q_a, G, curve)
+    print("drvdrvdv")
+
+
 
 main()
